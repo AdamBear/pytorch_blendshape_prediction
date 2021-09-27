@@ -15,14 +15,17 @@ from collections import OrderedDict
 # - speaker_id_2/sample_id1.wav
 # ..
 class VisemeDataset(Dataset):
-    def __init__(self, data_dir, audio_transform, viseme_transform):
+    def __init__(self, data_dir, audio_transform, viseme_transform, num_ipa_symbols):
         self.viseme_transform= viseme_transform
         self.audio_transform = audio_transform
         self.audio_files = []
+        self.transcripts = []
         self.visemes = []
         self.processed = {}
+        self.num_ipa_symbols = num_ipa_symbols
         for file in list(Path(data_dir).rglob("*.wav")):
             self.audio_files.append(file)
+            self.transcripts.append(str(file).replace(".wav", "_pp.txt"))
             self.visemes.append(str(file).replace("wav", "csv"))
 
     def __len__(self):
@@ -33,8 +36,13 @@ class VisemeDataset(Dataset):
             fft, num_samples, mask = self.audio_transform(self.audio_files[idx])
             viseme_filename = self.visemes[idx]
             visemes = torch.tensor(self.viseme_transform(viseme_filename).values.astype(np.float32))       
-            #assert(visemes.shape[0] == fft.shape[0])
-            self.processed[idx] = fft, torch.tensor(mask), visemes, viseme_filename
+            ipa_indices = []
+            with open(self.transcripts[idx], "r") as infile:
+                indices = infile.read()[0].split("#")
+                for ind in indices:
+                    ipa_indices.append(int(ind))
+                    ipa_indices.append(self.num_ipa_symbols)
+            self.processed[idx] = fft, torch.tensor(ipa_indices), torch.tensor(mask), visemes, viseme_filename
         return self.processed[idx]
 
 def preprocess_viseme(csv, pad_len_in_secs=None, target_framerate=None, blendshapes=None):

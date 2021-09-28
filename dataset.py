@@ -15,14 +15,20 @@ from collections import OrderedDict
 # - speaker_id_2/sample_id1.wav
 # ..
 class VisemeDataset(Dataset):
-    def __init__(self, data_dir, audio_transform, viseme_transform, num_ipa_symbols):
+    def __init__(self, data_dir, audio_transform, viseme_transform, num_ipa_symbols, text_pad_len):
+        self.space = num_ipa_symbols
+        self.start_token = num_ipa_symbols+1
+        self.end_token = num_ipa_symbols+2
+        self.pad_token = num_ipa_symbols+3
+        self.num_ipa_symbols = num_ipa_symbols+4
+
         self.viseme_transform= viseme_transform
         self.audio_transform = audio_transform
+        self.text_pad_len = text_pad_len
         self.audio_files = []
         self.transcripts = []
         self.visemes = []
         self.processed = {}
-        self.num_ipa_symbols = num_ipa_symbols
         for file in list(Path(data_dir).rglob("*.wav")):
             self.audio_files.append(file)
             self.transcripts.append(str(file).replace(".wav", "_pp.txt"))
@@ -36,33 +42,38 @@ class VisemeDataset(Dataset):
             fft, num_samples, mask = self.audio_transform(self.audio_files[idx])
             viseme_filename = self.visemes[idx]
             visemes = torch.tensor(self.viseme_transform(viseme_filename).values.astype(np.float32))       
-            ipa_indices = []
+            ipa_indices = [self.start_token]
             with open(self.transcripts[idx], "r") as infile:
-                indices = infile.read()[0].split("#")
+                indices = infile.readlines()[0].strip().split("#")
                 for ind in indices:
                     ipa_indices.append(int(ind))
-                    ipa_indices.append(self.num_ipa_symbols)
+                    ipa_indices.append(self.space)
+                if len(indices) > self.text_pad_len:
+                    print("Overflow")
+                    print(str(len(indices)))
+            ipa_indices.append(self.end_token)
+            while len(ipa_indices) < self.text_pad_len:
+                ipa_indices.append(self.pad_token)
             self.processed[idx] = fft, torch.tensor(ipa_indices), torch.tensor(mask), visemes, viseme_filename
         return self.processed[idx]
 
-def preprocess_viseme(csv, pad_len_in_secs=None, target_framerate=None, blendshapes=None):
-    csv = pd.read_csv(csv)
+def preprocess_viseme(path, pad_len_in_secs=None, target_framerate=None, blendshapes=None):
+    csv = pd.read_csv(path)
+
+    # first, drop every nth row to reduce effective framerate
+    csv = csv.iloc[::int(59.97 / target_framerate)]
     
-    # first, drop every nth row to reduce effective framerate    
-    #csv = csv.iloc[::int(59.97 / target_framerate)]
-    
+    csv.reset_index()
+
     pad_len = int(pad_len_in_secs * target_framerate)
-        
-    if(csv.shape[0] < pad_len):
-        pad = pd.DataFrame(0, index=[i for i in range(pad_len - csv.shape[0])], columns=csv.columns)
-        pad.pad(inplace=True)
-        csv = pd.concat([csv, pad])
+    if csv.shape[0] < pad_len:
+        csv = csv.append([csv.head(1)] * (pad_len - csv.shape[0]),ignore_index=True)
     else:
         csv = csv.iloc[:pad_len]
         #print("Visemes exceeded max length, truncate?")
     columns = list(csv.columns)
     columns.remove("Timecode")
-    
+
     return csv[blendshapes] if blendshapes is not None else csv
 
 

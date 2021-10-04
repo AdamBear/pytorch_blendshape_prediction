@@ -5,6 +5,7 @@ from torch.utils.data import DataLoader
 from pathlib import Path
 import pandas as pd
 from collections import OrderedDict
+import math
 
 # data_dir should be structured as follows:
 # - speaker_id_1/
@@ -39,43 +40,55 @@ class VisemeDataset(Dataset):
 
     def __getitem__(self, idx):
         if idx not in self.processed:
-            fft, num_samples, mask = self.audio_transform(self.audio_files[idx])
+            feats, num_padded = self.audio_transform(self.audio_files[idx])
             viseme_filename = self.visemes[idx]
             visemes = torch.tensor(self.viseme_transform(viseme_filename).values.astype(np.float32))       
-            ipa_indices = [self.start_token]
             with open(self.transcripts[idx], "r") as infile:
-                indices = infile.readlines()[0].strip().split("#")
-                for ind in indices:
-                    ipa_indices.append(int(ind))
-                    ipa_indices.append(self.space)
-                if len(indices) > self.text_pad_len:
-                    print("Overflow")
-                    print(str(len(indices)))
-            ipa_indices.append(self.end_token)
-            while len(ipa_indices) < self.text_pad_len:
-                ipa_indices.append(self.pad_token)
-            self.processed[idx] = fft, torch.tensor(ipa_indices), torch.tensor(mask), visemes, viseme_filename
+                lines = infile.readlines()
+                ipa_indices = [int(x) for x in lines[0].strip().split(" ")]
+                while len(ipa_indices) < self.text_pad_len:
+                    ipa_indices.append(self.pad_token)
+                num_indices = len(ipa_indices)
+                
+                if num_indices > self.text_pad_len:
+                    #print(f"Warning: text length {num_indices} exceeded pad length {self.text_pad_len}, trimming. This may lead to data loss.")
+                    ipa_indices = ipa_indices[:self.text_pad_len]
+                self.processed[idx] = feats, torch.tensor(ipa_indices), num_padded, visemes, viseme_filename
         return self.processed[idx]
+def preprocess_viseme(path,
+                      pad_len_in_secs=None,
+                      collapse_factor=None,
+                      blendshapes=None,
+                      source_framerate=None):
 
-def preprocess_viseme(path, pad_len_in_secs=None, target_framerate=None, blendshapes=None):
     csv = pd.read_csv(path)
 
-    # first, drop every nth row to reduce effective framerate
-    csv = csv.iloc[::int(59.97 / target_framerate)]
-    
+    # remove the Timecode column because we don't need it
+    columns = list(csv.columns)
+    columns.remove("Timecode")
+    if blendshapes is not None:
+        columns = [c for c in columns if c in blendshapes]
+    csv = csv[columns]
     csv.reset_index()
 
-    pad_len = int(pad_len_in_secs * target_framerate)
+    # pad the visemes to the intended length, using the first row as our base
+    pad_len = int(pad_len_in_secs * source_framerate)
     if csv.shape[0] < pad_len:
+        pad_indices = pad_len - csv.shape[0]
         csv = csv.append([csv.head(1)] * (pad_len - csv.shape[0]),ignore_index=True)
+        csv[pad_indices:] = 0
     else:
         csv = csv.iloc[:pad_len]
         #print("Visemes exceeded max length, truncate?")
-    columns = list(csv.columns)
-    columns.remove("Timecode")
-
-    return csv[blendshapes] if blendshapes is not None else csv
-
+    
+    # reduce the framerate by taking the mean of every X frames
+    if collapse_factor is not None:
+        i = 0
+        while i < csv.shape[0]:
+            csv.iloc[i] = csv.iloc[i:i+collapse_factor].mean()
+            i += collapse_factor
+        csv = csv.iloc[::collapse_factor]
+    return csv 
 
 def collate_samples(feat_tuples):
     return feat_tuples

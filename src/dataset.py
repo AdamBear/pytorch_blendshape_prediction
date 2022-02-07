@@ -6,11 +6,73 @@ from pathlib import Path
 import pandas as pd
 from collections import OrderedDict
 import math
+import os
+from decimal import Decimal
+
+from torch.nn.utils.rnn import pad_sequence
 
 # data_dir should be structured as follows:
 # - speaker_id_1/
-# - speaker_id_1/sample_id1.wav
-# - speaker_id_1/sample_id1.csv
+# - speaker_id_1/sample_id1.csv (blendshapes)
+# - speaker_id_1/sample_id1.ctm (phonetic alignments)
+# - speaker_id_1/sample_id2.csv
+# - speaker_id_1/sample_id2.ctm 
+# - speaker_id_2/sample_id1.csv
+# - speaker_id_2/sample_id1.ctm
+# ..
+class VisemeAlignmentDataset(Dataset):
+    def __init__(self, data_dir, preprocess_visemes, preprocess_alignments, pad_value=None):
+        self.pad_value = pad_value
+        self.preprocess_visemes = preprocess_visemes
+        self.preprocess_alignments = preprocess_alignments
+        self.visemes = []
+        self.alignments = []    
+        self.processed = {}
+        for viseme_file in list(Path(data_dir).rglob("*.csv")):
+            viseme_file = str(viseme_file)
+            ctm_file = str(viseme_file).replace("csv","ctm")            
+            if os.path.exists(ctm_file):
+                self.visemes.append(viseme_file)
+                self.alignments.append(ctm_file)
+    
+
+
+    def trim(self, batch):
+        for x, y, _ in batch:
+            x_len = len(x)
+            y_len = len(y)
+            if x_len != y_len:
+                x_len = min(x_len, y_len)
+                y_len = x_len
+            yield x[:x_len], y[:y_len], x_len, y_len, _
+            
+    def collate(self, batch, pad_val=None):
+        
+        trimmed = list(self.trim(batch))
+        
+        xs, ys, x_lens, y_lens, _ = list(zip(*trimmed))
+
+        x_pad = pad_sequence(xs, padding_value=pad_val, batch_first=True)
+        y_pad = pad_sequence(ys, padding_value=pad_val, batch_first=True)
+
+        return x_pad, y_pad, x_lens, y_lens, _
+    
+
+    def __len__(self):
+        return len(self.visemes)
+
+    def __getitem__(self, idx):
+        if idx not in self.processed:
+            visemes = self.preprocess_visemes(self.visemes[idx]).values.astype(np.float32)       
+            alignments = self.preprocess_alignments(self.alignments[idx])
+            self.processed[idx] = torch.IntTensor(alignments), torch.tensor(visemes), self.alignments[idx]
+        return self.processed[idx]
+
+# data_dir should be structured as follows:
+# - speaker_id_1/
+# - speaker_id_1/sample_id1.wav (audio)
+# - speaker_id_1/sample_id1.csv (blendshapes)
+# - speaker_id_1/sample_id1_pp.txt (transcript)
 # - speaker_id_1/sample_id2.wav
 # - speaker_id_1/sample_id2.wav
 # - speaker_id_2/sample_id1.wav
@@ -55,48 +117,7 @@ class VisemeDataset(Dataset):
                     ipa_indices = ipa_indices[:self.text_pad_len]
                 self.processed[idx] = feats, torch.tensor(ipa_indices), num_padded, visemes, viseme_filename
         return self.processed[idx]
-def preprocess_viseme(path,
-                      pad_len_in_secs=None,
-                      collapse_factor=None,
-                      blendshapes=None,
-                      source_framerate=None):
 
-    csv = pd.read_csv(path)
 
-    # remove the Timecode column because we don't need it
-    columns = list(csv.columns)
-    columns.remove("Timecode")
-    if blendshapes is not None:
-        columns = [c for c in columns if c in blendshapes]
-    csv = csv[columns]
-    csv.reset_index()
-
-    # pad the visemes to the intended length, using the first row as our base
-    pad_len = int(pad_len_in_secs * source_framerate)
-    if csv.shape[0] < pad_len:
-        pad_indices = pad_len - csv.shape[0]
-        csv = csv.append([csv.head(1)] * (pad_len - csv.shape[0]),ignore_index=True)
-        csv[pad_indices:] = 0
-    else:
-        csv = csv.iloc[:pad_len]
-        #print("Visemes exceeded max length, truncate?")
-    
-    # reduce the framerate by taking the mean of every X frames
-    if collapse_factor is not None:
-        i = 0
-        while i < csv.shape[0]:
-            csv.iloc[i] = csv.iloc[i:i+collapse_factor].mean()
-            i += collapse_factor
-        csv = csv.iloc[::collapse_factor]
-    return csv 
-
-def collate_samples(feat_tuples):
-    return feat_tuples
-    padded = torch.nn.utils.rnn.pad_sequence([f[0] for f in feat_tuples], batch_first=True, padding_value=0.0)
-    #mask = torch.stack([feat_tuples[i][1] for i in range(len(feat_tuples))])
-    labels = torch.nn.utils.rnn.pad_sequence([f[2] for f in feat_tuples], batch_first=True, padding_value=0.0)
-    viseme_filenames = [feat_tuples[i][3] for i in range(len(feat_tuples))]
-    
-    return padded, labels,viseme_filenames
 
 

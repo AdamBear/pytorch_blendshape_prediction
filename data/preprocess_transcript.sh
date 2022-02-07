@@ -1,4 +1,4 @@
-APP_COMPONENTS_DIR=$HOME/projects/mimetic_app_components
+APP_COMPONENTS_DIR=$HOME/projects/polyvox/polyvox_framework
 
 for dir in training test; do
     transcripts=$(find $(realpath $dir) -name "*.txt" -not -name "*_pp.txt")

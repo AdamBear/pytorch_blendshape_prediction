@@ -5,7 +5,7 @@ from torch.utils.data import DataLoader
 from pathlib import Path
 import pandas as pd
 from collections import OrderedDict
-import math
+import re
 import os
 from decimal import Decimal
 
@@ -25,18 +25,18 @@ class VisemeAlignmentDataset(Dataset):
         self.pad_value = pad_value
         self.preprocess_visemes = preprocess_visemes
         self.preprocess_alignments = preprocess_alignments
-        self.visemes = []
-        self.alignments = []    
+        self.inputs = []
+        self.lengths = []
         self.processed = {}
         for viseme_file in list(Path(data_dir).rglob("*.csv")):
             viseme_file = str(viseme_file)
-            ctm_file = str(viseme_file).replace("csv","ctm")            
-            if os.path.exists(ctm_file):
-                self.visemes.append(viseme_file)
-                self.alignments.append(ctm_file)
-    
-
-
+            if re.search("[0-9]\.[0.9]", viseme_file) is None:
+                ctm_file = str(viseme_file).replace("csv","ctm")            
+                if os.path.exists(ctm_file):
+                    tlen = len(open(str(viseme_file).replace("csv","txt"), "r").readlines())
+                    self.inputs.append((viseme_file,ctm_file,tlen))
+        self.inputs.sort(key=lambda x: x[2])
+                
     def trim(self, batch):
         for x, y, _ in batch:
             x_len = len(x)
@@ -54,18 +54,19 @@ class VisemeAlignmentDataset(Dataset):
 
         x_pad = pad_sequence(xs, padding_value=pad_val, batch_first=True)
         y_pad = pad_sequence(ys, padding_value=pad_val, batch_first=True)
-
+        # x_pad = torch.nn.utils.rnn.pack_padded_sequence(xs, x_lens)
+        # y_pad = torch.nn.utils.rnn.pack_padded_sequence(ys, y_lens)
         return x_pad, y_pad, x_lens, y_lens, _
     
 
     def __len__(self):
-        return len(self.visemes)
+        return len(self.inputs)
 
     def __getitem__(self, idx):
         if idx not in self.processed:
-            visemes = self.preprocess_visemes(self.visemes[idx]).values.astype(np.float32)       
-            alignments = self.preprocess_alignments(self.alignments[idx])
-            self.processed[idx] = torch.IntTensor(alignments), torch.tensor(visemes), self.alignments[idx]
+            visemes = self.preprocess_visemes(self.inputs[idx][0]).values.astype(np.float32)       
+            alignments = self.preprocess_alignments(self.inputs[idx][1])
+            self.processed[idx] = torch.LongTensor(alignments), torch.tensor(visemes), self.inputs[idx][1]
         return self.processed[idx]
 
 # data_dir should be structured as follows:
@@ -89,8 +90,7 @@ class VisemeDataset(Dataset):
         self.audio_transform = audio_transform
         self.text_pad_len = text_pad_len
         self.audio_files = []
-        self.transcripts = []
-        self.visemes = []
+        self.inputs = []
         self.processed = {}
         for file in list(Path(data_dir).rglob("*.wav")):
             self.audio_files.append(file)

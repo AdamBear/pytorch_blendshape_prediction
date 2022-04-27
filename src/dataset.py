@@ -13,12 +13,11 @@ from torch.nn.utils.rnn import pad_sequence
 
 # data_dir should be structured as follows:
 # - speaker_id_1/
+# - speaker_id_1/alignments
+# - speaker_id_1/phones.txt
 # - speaker_id_1/sample_id1.csv (blendshapes)
-# - speaker_id_1/sample_id1.ctm (phonetic alignments)
 # - speaker_id_1/sample_id2.csv
-# - speaker_id_1/sample_id2.ctm 
 # - speaker_id_2/sample_id1.csv
-# - speaker_id_2/sample_id1.ctm
 # ..
 class VisemeAlignmentDataset(Dataset):
     def __init__(self, data_dir, preprocess_visemes, preprocess_alignments, pad_value=None):
@@ -28,14 +27,39 @@ class VisemeAlignmentDataset(Dataset):
         self.inputs = []
         self.lengths = []
         self.processed = {}
+
+        alignments_file=os.path.join(data_dir, "alignments")
+        if os.path.exists(alignments_file) is not True:
+            raise Exception(f"File [ alignment ] does not exist in directory {data_dir}")
+        phones_file=os.path.join(data_dir, "phones.txt")
+        if os.path.exists(phones_file) is not True:
+            raise Exception(f"File [ phones.txt ] does not exist in directory {data_dir}")
+        phones = {}
+        for line in open(phones_file, "r").readlines():
+            split =line.strip().split(" ")
+            phones[split[1]] = split[0]
+        self.alignments = {}
+        with open(alignments_file,"r") as infile:
+            for line in infile:
+                split=line.strip().split(" ")
+                # also note that alignments are keyed by SPKR_ID-UTT_ID, but viseme files are keyed by UTT_ID only, so we just remove the speaker ID here
+                utt_id=split[0].split("-")[1]
+                print(f"ID {utt_id} {len(split)} {list(range(1, len(split), 3))}")
+                # print(split)
+                self.alignments[utt_id] = [(phones[split[i]],int(split[i+1])) for i in range(1, len(split), 3)]
+        
         for viseme_file in list(Path(data_dir).rglob("*.csv")):
             viseme_file = str(viseme_file)
             if re.search("[0-9]\.[0.9]", viseme_file) is None:
-                ctm_file = str(viseme_file).replace("csv","ctm")            
-                if os.path.exists(ctm_file):
-                    tlen = len(open(str(viseme_file).replace("csv","txt"), "r").readlines())
-                    self.inputs.append((viseme_file,ctm_file,tlen))
-        self.inputs.sort(key=lambda x: x[2])
+                
+                utt_id=os.path.basename(viseme_file).replace(".csv","")
+                # sometimes there won't be a phone alignment row for a given viseme file (alignment may have failed)
+                # just skip these
+                
+                if utt_id not in self.alignments:
+                    continue
+                self.inputs.append((viseme_file,self.alignments[utt_id]))
+        self.inputs.sort(key=lambda x: len(x[1]))
                 
     def trim(self, batch):
         for x, y, _ in batch:
